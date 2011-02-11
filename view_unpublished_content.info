@@ -1,0 +1,7 @@
+; $Id$
+name = View unpublished content
+description = "Select which roles should be able to see unpublished all unpubished nodes."
+package = "Permissions"
+
+; Core version (required)
+core = 7.x
