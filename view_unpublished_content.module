@@ -14,11 +14,31 @@
  * Implements hook_permission().
  */
 function view_unpublished_content_permission() {
-  return array(
-    'view any unpublished content' =>  array(
+  $perms = array(
+    'view any unpublished content' => array(
       'title' => t('View any unpublished content'),      
     ),
   );
+  
+  // Generate standard node permissions for all applicable node types.
+  foreach (view_unpublished_content_get_configured_types() as $type) {
+    $perms += view_unpublished_content_list_permissions($type);
+  }
+  
+  return $perms;
+}
+
+function view_unpublished_content_list_permissions($type) {
+  $info = node_type_get_type($type);
+  $type = check_plain($info->type);
+  
+  $perms = array(
+    "view any unpublished $type content" => array(
+      'title' => t('%type_name: View any unpublished content', array('%type_name' => $info->name)),
+    ),
+  );
+
+  return $perms;
 }
 
 /**
@@ -47,6 +67,15 @@ function view_unpublished_content_node_access_records($node) {
       'priority' => 0,
     );
     
+    $grants[] = array(
+      'realm' => 'view_unpublished_' . $node->type . '_content',
+      'gid' => 1,
+      'grant_view' => 1,
+      'grant_update' => 0,
+      'grant_delete' => 0,
+      'priority' => 0,
+    );
+    
     return $grants;
   }
 }
@@ -56,12 +85,28 @@ function view_unpublished_content_node_access_records($node) {
  */
 function view_unpublished_content_node_grants($account, $op) {
   $grants = array();
-  
-  if (user_access('view any unpublished content', $account)) {
-    $grants['view_unpublished_content'] = array(1);
+
+  if ($op == 'view') {
+    if (user_access('view any unpublished content', $account)) {
+      $grants['view_unpublished_content'] = array(1);
+      return $grants;
+    }
+
+    foreach(view_unpublished_content_get_configured_types() as $type) {
+      if (user_access("view any unpublished $type content", $account)) {
+        $grants['view_unpublished_' . $type . '_content'] = array(1);
+        return $grants;
+      }
+    }
   }
   
   return $grants;
+}
+
+function view_unpublished_content_get_configured_types($reset = FALSE) {
+  static $types = array();
+  $types = (empty($types) || $reset == TRUE) ? node_permissions_get_configured_types() : $types;
+  return $types;
 }
 
 /**
@@ -131,23 +176,31 @@ function view_unpublished_content_node_admin_nodes() {
   $query = db_select('node', 'n')->extend('PagerDefault')->extend('TableSort');
   node_build_filter_query($query);
 
-  if (!user_access('bypass node access')) {
+  if (!(user_access('bypass node access') || user_access('view any unpublished content'))) {
     // If the user is able to view any unpublished nodes, allow them
     // to see these in addition to published nodes. Check that they actually
     // have some unpublished nodes to view before adding the condition.
-    if (user_access('view any unpublished content') && $any_unpublished = db_query('SELECT nid FROM {node} WHERE status = :status', array(':status' => 0))->fetchCol()) {
+    
+    $types = array();
+    foreach(view_unpublished_content_get_configured_types() as $type) {
+      if (user_access("view any unpublished $type content")) {
+        $types[$type] = $type;
+      }
+    }
+
+    $unpublished = array();
+    if (!empty($types) && $any_unpublished = db_query('SELECT nid FROM {node} WHERE status = :status AND type IN (:types)', array(':status' => 0, ':types' => $types))->fetchCol()) {
+      $unpublished = array_merge($unpublished, $any_unpublished);
+    }
+    
+    if ((user_access('view own unpublished content') && $own_unpublished = db_query('SELECT nid FROM {node} WHERE uid = :uid AND status = :status', array(':uid' => $GLOBALS['user']->uid, ':status' => 0))->fetchCol()) || !empty($unpublished)) {
+      // If the user is able to view their own unpublished nodes, allow them
+      // to see these in addition to published nodes. Check that they actually
+      // have some unpublished nodes to view before adding the condition.
+      $unpublished = array_unique(array_merge($unpublished, $own_unpublished));
       $query->condition(db_or()
         ->condition('n.status', 1)
-        ->condition('n.nid', $any_unpublished, 'IN')
-      );
-    // If the user is able to view their own unpublished nodes, allow them
-    // to see these in addition to published nodes. Check that they actually
-    // have some unpublished nodes to view before adding the condition.  
-    } 
-    elseif (user_access('view own unpublished content') && $own_unpublished = db_query('SELECT nid FROM {node} WHERE uid = :uid AND status = :status', array(':uid' => $GLOBALS['user']->uid, ':status' => 0))->fetchCol()) {
-      $query->condition(db_or()
-        ->condition('n.status', 1)
-        ->condition('n.nid', $own_unpublished, 'IN')
+        ->condition('n.nid', $unpublished, 'IN')
       );
     }
     else {
